@@ -1,0 +1,41 @@
+# Binaries
+*.exe
+!pcaptor-windows-amd64.exe
+!pcaptor-linux-amd64
+pcaptor
+pcaptor-*
+!pcaptor-windows-amd64.exe
+!pcaptor-linux-amd64
+
+# Generated reports
+*_report.html
+*_report.json
+*_extracted/
+*.csv
+!sample_pcap/capture.pcap
+
+# Configuration
+pcaptor.json
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Go
+*.test
+*.out
+coverage.txt
+vendor/
+
+# Temporary files
+*.tmp
+*.temp
