@@ -42,7 +42,7 @@ PCaptor is a high-performance network packet analyzer built in Go that provides 
 
 ### Why PCaptor?
 
-- 🚀 **High Performance**: Process 75,000+ packets per second
+- 🚀 **High Performance**: Process 75,000+ packets per second ( though detection takes time )
 - 🎯 **Advanced C2 Detection**: Identify 11 major C2 frameworks
 - 🧠 **Behavioral Analysis**: Detect unknown threats through pattern analysis
 - 🌐 **DNS Tunneling Detection**: Identify data exfiltration via DNS
