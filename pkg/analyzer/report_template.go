@@ -11,7 +11,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EasyPCAP Analysis Report - {{.FileName}}</title>
+    <title>PCaptor Analysis Report - {{.FileName}}</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
@@ -572,7 +572,7 @@ const htmlTemplate = `<!DOCTYPE html>
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-brand">
-                <h1>🔍 EasyPCAP</h1>
+                <h1>🔍 PCaptor</h1>
             </div>
             <nav class="sidebar-nav">
                 <div class="nav-item active" onclick="showSection('dashboard')">
