@@ -783,20 +783,21 @@ for detection in data['c2_detections']:
 
 ---
 
-## 🛣️ Roadmap
+## 🛣️ Planned Pro Version ( Paid )
 
 ### Planned Features
 
-- [ ] Machine learning-based C2 detection
-- [ ] JA3/JA4 TLS fingerprinting
-- [ ] Network flow temporal analysis
-- [ ] Custom signature support
-- [ ] YARA rule integration
-- [ ] Threat intelligence feed integration
-- [ ] Real-time capture analysis
-- [ ] Web-based GUI
-- [ ] Distributed analysis support
-- [ ] Plugin architecture
+- Machine learning-based C2 detection ( Research work going on )
+- ✨ JA3/JA4 TLS fingerprinting
+- ✨ Network flow temporal analysis
+- ✨ Custom signature support
+- ✨ YARA rule integration
+- ✨ Free Threat intelligence feed integration
+- ✨ VirusTotal and URLhaus API integration for IOC verification
+- ✨ Real-time capture analysis ( Upcoming )
+- ✨ Web-based GUI ( Still under development )
+- ✨ Distributed analysis support
+- ✨ Plugin Based architecture
 
 ---
 
