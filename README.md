@@ -787,7 +787,7 @@ for detection in data['c2_detections']:
 
 ### Planned Features
 
-- Machine learning-based C2 detection ( Research work going on )
+- Machine learning-based C2 detection ( Research ongoing )
 - ✨ JA3/JA4 TLS fingerprinting
 - ✨ Network flow temporal analysis
 - ✨ Custom signature support
@@ -795,8 +795,7 @@ for detection in data['c2_detections']:
 - ✨ Free Threat intelligence feed integration
 - ✨ VirusTotal and URLhaus API integration for IOC verification
 - ✨ Real-time capture analysis ( Upcoming )
-- ✨ Web-based GUI ( Still under development )
-- ✨ Distributed analysis support
+- ✨ Web-based GUI ( Do we need it ? Really ? )
 - ✨ Plugin Based architecture
 
 ---
