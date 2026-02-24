@@ -10,11 +10,18 @@ import (
 	"time"
 )
 
+func (a *Analyzer) reportBaseName() string {
+	if a.pcapFile != "" {
+		return filepath.Join(filepath.Dir(a.pcapFile),
+			strings.TrimSuffix(filepath.Base(a.pcapFile), filepath.Ext(a.pcapFile)))
+	}
+	return filepath.Join(a.outputDir, "live_capture")
+}
+
 func (a *Analyzer) ExportHTML() error {
 	fmt.Println("Generating HTML report...")
-	
-	outputFile := filepath.Join(filepath.Dir(a.pcapFile), 
-		strings.TrimSuffix(filepath.Base(a.pcapFile), filepath.Ext(a.pcapFile))+"_report.html")
+
+	outputFile := a.reportBaseName() + "_report.html"
 
 	fmt.Println("  - Building HTML content...")
 	html := a.generateHTML()
@@ -29,8 +36,7 @@ func (a *Analyzer) ExportHTML() error {
 }
 
 func (a *Analyzer) ExportJSON() error {
-	outputFile := filepath.Join(filepath.Dir(a.pcapFile), 
-		strings.TrimSuffix(filepath.Base(a.pcapFile), filepath.Ext(a.pcapFile))+"_report.json")
+	outputFile := a.reportBaseName() + "_report.json"
 
 	// Convert flows map to slice for JSON marshaling
 	flowsList := make([]map[string]interface{}, 0, len(a.flows))
@@ -87,8 +93,7 @@ func (a *Analyzer) ExportJSON() error {
 }
 
 func (a *Analyzer) ExportCSV() error {
-	baseFile := filepath.Join(filepath.Dir(a.pcapFile), 
-		strings.TrimSuffix(filepath.Base(a.pcapFile), filepath.Ext(a.pcapFile)))
+	baseFile := a.reportBaseName()
 
 	// Export threats
 	if err := a.exportThreatsCSV(baseFile + "_threats.csv"); err != nil {

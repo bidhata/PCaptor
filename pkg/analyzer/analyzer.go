@@ -15,7 +15,14 @@ type Analyzer struct {
 	pcapFile   string
 	outputDir  string
 	workers    int
-	
+
+	// Live capture settings
+	iface      string
+	bpfFilter  string
+	snapLen    int32
+	promisc    bool
+	stopChan   chan struct{}
+
 	// Results
 	packets    []PacketInfo
 	flows      map[FlowKey]*Flow
@@ -40,17 +47,17 @@ type Analyzer struct {
 	exfiltrations []DataExfiltration
 	stegoDetections []StegoDetection
 	stats      Statistics
-	
+
 	// Memory management for large files
 	maxFlows      int
 	maxMessages   int
 	flowCount     int
 	messageCount  int
-	
+
 	// Synchronization
 	mu         sync.RWMutex
 	wg         sync.WaitGroup
-	
+
 	// Progress
 	totalPackets int64
 	processed    int64
@@ -248,9 +255,30 @@ func New(pcapFile, outputDir string, workers int) *Analyzer {
 		outputDir:   outputDir,
 		workers:     workers,
 		flows:       make(map[FlowKey]*Flow),
-		maxFlows:    1000000, // Limit to 1M flows for large files
-		maxMessages: 100000,  // Limit messages per protocol
+		maxFlows:    1000000,
+		maxMessages: 100000,
 		startTime:   time.Now(),
+		stopChan:    make(chan struct{}),
+	}
+}
+
+func NewLive(iface, bpfFilter, outputDir string, workers int) *Analyzer {
+	if outputDir == "" {
+		outputDir = fmt.Sprintf("live_%s_%s", iface, time.Now().Format("20060102_150405"))
+	}
+
+	return &Analyzer{
+		iface:       iface,
+		bpfFilter:   bpfFilter,
+		outputDir:   outputDir,
+		workers:     workers,
+		snapLen:     65535,
+		promisc:     true,
+		flows:       make(map[FlowKey]*Flow),
+		maxFlows:    1000000,
+		maxMessages: 100000,
+		startTime:   time.Now(),
+		stopChan:    make(chan struct{}),
 	}
 }
 
@@ -344,6 +372,115 @@ func (a *Analyzer) Analyze() error {
 	a.calculateStatistics()
 
 	return nil
+}
+
+func (a *Analyzer) AnalyzeLive() error {
+	handle, err := pcap.OpenLive(a.iface, a.snapLen, a.promisc, pcap.BlockForever)
+	if err != nil {
+		return fmt.Errorf("failed to open interface %s: %w", a.iface, err)
+	}
+	defer handle.Close()
+
+	if a.bpfFilter != "" {
+		if err := handle.SetBPFFilter(a.bpfFilter); err != nil {
+			return fmt.Errorf("invalid BPF filter %q: %w", a.bpfFilter, err)
+		}
+	}
+
+	if err := os.MkdirAll(a.outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+	os.MkdirAll(filepath.Join(a.outputDir, "files"), 0755)
+	os.MkdirAll(filepath.Join(a.outputDir, "certificates"), 0755)
+
+	fmt.Printf("Capturing on interface %s ...\n", a.iface)
+	if a.bpfFilter != "" {
+		fmt.Printf("BPF filter: %s\n", a.bpfFilter)
+	}
+	fmt.Println("Press Ctrl+C to stop capture and generate reports.")
+
+	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetChan := packetSource.Packets()
+
+	workChan := make(chan gopacket.Packet, a.workers*100)
+
+	for i := 0; i < a.workers; i++ {
+		a.wg.Add(1)
+		go a.worker(workChan)
+	}
+
+	done := make(chan bool)
+	go a.progressReporter(done)
+
+	packetNum := int64(0)
+loop:
+	for {
+		select {
+		case <-a.stopChan:
+			break loop
+		case packet, ok := <-packetChan:
+			if !ok {
+				break loop
+			}
+			packetNum++
+			workChan <- packet
+
+			if packetNum%50000 == 0 {
+				a.mu.Lock()
+				a.totalPackets = packetNum
+				a.mu.Unlock()
+			}
+		}
+	}
+	close(workChan)
+
+	a.wg.Wait()
+	done <- true
+
+	a.mu.Lock()
+	a.totalPackets = packetNum
+	a.mu.Unlock()
+
+	fmt.Printf("\nCaptured and processed %d packets\n", packetNum)
+
+	if packetNum == 0 {
+		fmt.Println("No packets captured.")
+		return nil
+	}
+
+	fmt.Println("Detecting anomalies...")
+	a.detectAnomalies()
+
+	fmt.Println("Running advanced threat detection...")
+
+	beacons := a.detectBeaconing()
+	a.beaconPatterns = beacons
+	a.addBeaconThreats(beacons)
+
+	sshTunnels := a.detectSSHTunneling()
+	a.sshTunnels = sshTunnels
+	a.addSSHTunnelThreats(sshTunnels)
+
+	lateralMovements := a.detectLateralMovement()
+	a.lateralMovements = lateralMovements
+	a.addLateralMovementThreats(lateralMovements)
+
+	exfiltrations := a.detectExfiltration()
+	a.exfiltrations = exfiltrations
+	a.addExfiltrationThreats(exfiltrations)
+
+	a.calculateStatistics()
+
+	return nil
+}
+
+func (a *Analyzer) StopCapture() {
+	select {
+	case <-a.stopChan:
+		// Already closed
+	default:
+		close(a.stopChan)
+	}
 }
 
 func (a *Analyzer) countPackets() int64 {
@@ -533,4 +670,114 @@ func (a *Analyzer) GetOutputDir() string {
 
 func (a *Analyzer) GetProcessingTime() time.Duration {
 	return time.Since(a.startTime)
+}
+
+// Dashboard getters — thread-safe read access for live streaming
+
+func (a *Analyzer) GetProcessed() int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.processed
+}
+
+func (a *Analyzer) GetTotalBytes() int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var total int64
+	for _, flow := range a.flows {
+		total += flow.Bytes
+	}
+	return total
+}
+
+func (a *Analyzer) GetProtocolDistribution() map[string]int64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	dist := make(map[string]int64)
+	for key, flow := range a.flows {
+		dist[key.Proto] += flow.Packets
+	}
+	return dist
+}
+
+func (a *Analyzer) GetTopTalkers(limit int) []TalkerInfo {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	talkers := make(map[string]*TalkerInfo)
+	for key, flow := range a.flows {
+		if _, ok := talkers[key.SrcIP]; !ok {
+			talkers[key.SrcIP] = &TalkerInfo{IP: key.SrcIP}
+		}
+		talkers[key.SrcIP].Packets += flow.Packets
+		talkers[key.SrcIP].Bytes += flow.Bytes
+	}
+	result := make([]TalkerInfo, 0, len(talkers))
+	for _, t := range talkers {
+		result = append(result, *t)
+	}
+	// Simple sort by bytes descending
+	for i := 0; i < len(result)-1; i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].Bytes > result[i].Bytes {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}
+
+func (a *Analyzer) GetRecentThreats(limit int) []Threat {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	n := len(a.threats)
+	if n == 0 {
+		return nil
+	}
+	start := n - limit
+	if start < 0 {
+		start = 0
+	}
+	return append([]Threat{}, a.threats[start:]...)
+}
+
+func (a *Analyzer) GetRecentC2(limit int) []C2Detection {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	n := len(a.c2Detections)
+	if n == 0 {
+		return nil
+	}
+	start := n - limit
+	if start < 0 {
+		start = 0
+	}
+	return append([]C2Detection{}, a.c2Detections[start:]...)
+}
+
+func (a *Analyzer) GetHTTPRequestCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.httpRequests)
+}
+
+func (a *Analyzer) GetC2DetectionCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.c2Detections)
+}
+
+func (a *Analyzer) GetStartTime() time.Time {
+	return a.startTime
+}
+
+func (a *Analyzer) IsCaptureStopped() bool {
+	select {
+	case <-a.stopChan:
+		return true
+	default:
+		return false
+	}
 }
