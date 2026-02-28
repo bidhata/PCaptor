@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"syscall"
@@ -41,7 +42,10 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	// Command line flags
-	pcapFile := flag.String("f", "", "PCAP file to analyze (required)")
+	pcapFile := flag.String("f", "", "PCAP file to analyze")
+	iface := flag.String("i", "", "Network interface for live capture (e.g., en0, eth0)")
+	bpfFilter := flag.String("bpf", "", "BPF filter for live capture (e.g., \"tcp port 80\")")
+	duration := flag.Int("d", 0, "Live capture duration in seconds (0 = until Ctrl+C)")
 	outputDir := flag.String("o", "", "Output directory for reports")
 	workers := flag.Int("w", runtime.NumCPU(), "Number of worker goroutines")
 	exportHTML := flag.Bool("html", false, "Export HTML report")
@@ -54,6 +58,8 @@ func main() {
 	quiet := flag.Bool("q", false, "Quiet mode (minimal output)")
 	verbose := flag.Bool("v", false, "Verbose mode (detailed output)")
 	generateConfig := flag.Bool("generate-config", false, "Generate default configuration file")
+	dashboard := flag.Bool("dashboard", false, "Launch live web dashboard during capture")
+	dashboardPort := flag.Int("port", 8080, "Dashboard HTTP port (default 8080)")
 
 	flag.Parse()
 
@@ -133,18 +139,37 @@ func main() {
 		}
 	}
 
-	// CLI mode
+	// CLI mode - file analysis
 	if *pcapFile != "" {
 		exitCode := runCLI(*pcapFile, *outputDir, *workers, *exportHTML, *exportJSON, *exportCSV, sigChan)
 		os.Exit(exitCode)
 	}
 
-	// No file specified - show usage
+	// Live capture mode
+	if *iface != "" {
+		exitCode := runLive(*iface, *bpfFilter, *outputDir, *workers, *duration, *exportHTML, *exportJSON, *exportCSV, *dashboard, *dashboardPort, sigChan)
+		os.Exit(exitCode)
+	}
+
+	// No mode specified - show usage
 	fmt.Println("PCaptor v" + version + " - Advanced Network Packet Analyzer")
-	fmt.Println("\nUsage: pcaptor -f <pcap_file> [options]")
-	fmt.Println("\nRequired:")
+	fmt.Println("\nUsage:")
+	fmt.Println("  pcaptor -f <pcap_file> [options]    Analyze a PCAP file")
+	fmt.Println("  pcaptor -i <interface> [options]     Live capture from network interface")
+	fmt.Println("\nInput (one required):")
 	fmt.Println("  -f string")
 	fmt.Println("        PCAP file to analyze")
+	fmt.Println("  -i string")
+	fmt.Println("        Network interface for live capture (e.g., en0, eth0)")
+	fmt.Println("\nLive Capture Options:")
+	fmt.Println("  -bpf string")
+	fmt.Println("        BPF filter expression (e.g., \"tcp port 80\")")
+	fmt.Println("  -d int")
+	fmt.Println("        Capture duration in seconds (0 = until Ctrl+C)")
+	fmt.Println("  -dashboard")
+	fmt.Println("        Launch live web dashboard during capture")
+	fmt.Println("  -port int")
+	fmt.Println("        Dashboard HTTP port (default 8080)")
 	fmt.Println("\nOutput Options:")
 	fmt.Println("  -html")
 	fmt.Println("        Export HTML report")
@@ -174,6 +199,10 @@ func main() {
 	fmt.Println("\nExamples:")
 	fmt.Println("  pcaptor -f capture.pcap -html")
 	fmt.Println("  pcaptor -f capture.pcap -html -csv -json")
+	fmt.Println("  pcaptor -i en0 -html")
+	fmt.Println("  pcaptor -i en0 -dashboard")
+	fmt.Println("  pcaptor -i en0 -dashboard -port 9090")
+	fmt.Println("  pcaptor -i eth0 -bpf \"tcp port 443\" -d 60 -html -json")
 	fmt.Println("  pcaptor -f capture.pcap -config pcaptor.json")
 	fmt.Println("  pcaptor -generate-config")
 	fmt.Println("\nFor more information, visit: " + github)
@@ -270,4 +299,141 @@ func runCLI(pcapFile, outputDir string, workers int, html, json, csv bool, sigCh
 	}
 
 	return ExitSuccess
+}
+
+func runLive(iface, bpfFilter, outputDir string, workers, duration int, html, json, csv, dashboardEnabled bool, dashboardPort int, sigChan chan os.Signal) int {
+	startTime := time.Now()
+
+	log.Info("PCaptor v%s - Live capture on %s", version, iface)
+	log.Info("Workers: %d", workers)
+	if bpfFilter != "" {
+		log.Info("BPF filter: %s", bpfFilter)
+	}
+	if duration > 0 {
+		log.Info("Capture duration: %d seconds", duration)
+	}
+
+	a := analyzer.NewLive(iface, bpfFilter, outputDir, workers)
+
+	// Start dashboard server if requested
+	var ds *analyzer.DashboardServer
+	if dashboardEnabled {
+		ds = analyzer.NewDashboardServer(a, dashboardPort)
+		if err := ds.Start(); err != nil {
+			log.Error("Dashboard failed: %v", err)
+			return ExitGeneralError
+		}
+		dashURL := fmt.Sprintf("http://localhost:%d", dashboardPort)
+		log.Info("Dashboard running at %s", dashURL)
+		openBrowser(dashURL)
+	}
+
+	// Run analysis in goroutine
+	done := make(chan error, 1)
+	go func() {
+		done <- a.AnalyzeLive()
+	}()
+
+	// Duration-based auto-stop
+	var durationTimer *time.Timer
+	if duration > 0 {
+		durationTimer = time.NewTimer(time.Duration(duration) * time.Second)
+	}
+
+	// Wait for completion, duration, or interrupt
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Error("Live capture failed: %v", err)
+			return ExitAnalysisError
+		}
+	case sig := <-sigChan:
+		log.Info("Received signal: %v — stopping capture...", sig)
+		a.StopCapture()
+		// Wait for post-processing to finish
+		if err := <-done; err != nil {
+			log.Error("Analysis failed: %v", err)
+			return ExitAnalysisError
+		}
+	case <-func() <-chan time.Time {
+		if durationTimer != nil {
+			return durationTimer.C
+		}
+		return make(chan time.Time) // blocks forever
+	}():
+		log.Info("Capture duration reached (%d seconds) — stopping...", duration)
+		a.StopCapture()
+		if err := <-done; err != nil {
+			log.Error("Analysis failed: %v", err)
+			return ExitAnalysisError
+		}
+	}
+
+	// Shut down dashboard server
+	if ds != nil {
+		ds.Shutdown()
+		log.Info("Dashboard server stopped")
+	}
+
+	// Export reports
+	exportErrors := 0
+
+	if html {
+		log.Info("Exporting HTML report...")
+		if err := a.ExportHTML(); err != nil {
+			log.Error("HTML export failed: %v", err)
+			exportErrors++
+		} else {
+			log.Info("HTML report exported successfully")
+		}
+	}
+
+	if json {
+		log.Info("Exporting JSON report...")
+		if err := a.ExportJSON(); err != nil {
+			log.Error("JSON export failed: %v", err)
+			exportErrors++
+		} else {
+			log.Info("JSON report exported successfully")
+		}
+	}
+
+	if csv {
+		log.Info("Exporting CSV reports...")
+		if err := a.ExportCSV(); err != nil {
+			log.Error("CSV export failed: %v", err)
+			exportErrors++
+		} else {
+			log.Info("CSV reports exported successfully")
+		}
+	}
+
+	fmt.Println()
+	a.PrintSummary()
+
+	elapsed := time.Since(startTime)
+	log.Info("Total execution time: %v", elapsed)
+
+	if exportErrors > 0 {
+		log.Warn("Completed with %d export error(s)", exportErrors)
+		return ExitGeneralError
+	}
+
+	return ExitSuccess
+}
+
+// openBrowser opens a URL in the user's default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return
+	}
+	cmd.Start()
 }
